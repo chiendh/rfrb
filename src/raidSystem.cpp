@@ -435,170 +435,134 @@ bool RaidSystem::checkForEqual(char *buf, char *in, size_t size)
  */
 bool RaidSystem::easyCheck()
 {
-	//Initial buffer allocations
-	char buf1[CHECKSIZE];
-	char buf5[CHECKSIZE];
-	char *checkAgainstMe;
-	char *in;
-	unsigned int raid1=0, raid5=0, misses=0;
+    char buf1[CHECKSIZE] = {0};
+    char buf5[CHECKSIZE];
+    unsigned int raid1 = 0, raid5 = 0, misses = 0;
+    std::vector<FileReader *> inFiles = handle->getInFiles();
 
-	//Starting fileReader for each image
-	std::vector<FileReader *> inFiles = handle->getInFiles();
+    if (inFiles.size() < 2)
+    {
+        std::cout << "\tThere are too few devices for a Raid system." << std::endl;
+        return false;
+    }
+    if (handle->findGoodBlock() == false)
+    {
+        std::cerr << "\tNo valid readable block found! Disc too broken!" << std::endl;
+        return false;
+    }
 
-	//Check if enough images are specified
-	if(inFiles.size() < 2)
-	{
-		std::cout << "\tThere are too few devices for a Raid system." << std::endl;
-		return false;
-	}
-	//Check if images are too broken
-	if (handle->findGoodBlock() == false)
-	{
-		std::cerr << "\tNo valid readable block found! Disc too broken!" << std::endl;
-		return false;
-	}
+    std::cout << "\tTesting 1.5 million blocks to check if a valid Raid-version can be estimated." << std::endl;
+    for (auto &inFile : inFiles)
+    {
+        inFile->setBlockSize(CHECKSIZE);
+    }
 
-	for (int j = 0; j < CHECKSIZE; ++j)
-	{
-		buf1[j] = 0;
-	}
+    std::cout << "| ";
+    for (size_t count = 0; count < 1500000; ++count)
+    {
+        if ((count % 5000) == 0)
+            std::cout << "* ";
 
-	std::cout << "\tTesting 1.5 million blocks to check if a valid Raid-version can be estimated." << std::endl;
+        char *checkAgainstMe = inFiles.at(0)->getBlock();
+        memcpy(buf5, checkAgainstMe, CHECKSIZE);
 
-	//Iterate over many blocks and trying to estimate the RAID-level
-	for (size_t i = 0; i < inFiles.size(); ++i)
-	{
-		inFiles.at(i)->setBlockSize(CHECKSIZE);
-	}
-	std::cout << "| ";
-	for (size_t count=0; count < 1500000; ++count)
-	{
-		if ((count%5000) == 0)
-			std::cout << "* ";
-		//Get a block from the first image
-		checkAgainstMe = inFiles.at(0)->getBlock();
-		int raid1_miss = 0;
-		int raid1_hit = 0;
-		for (int j = 0; j < CHECKSIZE; ++j)
-		{
-			buf5[j] = checkAgainstMe[j];
-		}
-		//Get blocks from the other images
-		for (unsigned int j = 1; j < inFiles.size(); ++j)
-		{
-			in = inFiles.at(j)->getBlock();
-			//Calculate XOR
-			for (int x = 0; x < CHECKSIZE; ++x)
-			{
-				buf1[x] = checkAgainstMe[x]^in[x];
-				buf5[x] = buf5[x]^in[x];
-			}
-			//If XOR is in buf1 is not zero, then we have no RAID1
-			if (checkForNull(buf1, CHECKSIZE)==false)
-			{
-				++raid1_miss;
-				for (int x = 0; x < CHECKSIZE; ++x)
-				{
-					buf1[x] = 0;
-				}
-			}
-			else
-			{
-				++raid1_hit;
-			}
-		}
-		if (raid1_miss == 0)
-		{
-			//Blocks are equal, we have a RAID1 hit
-			++raid1;
-		}
-		//else if (checkForEqual(buf5,checkAgainstMe+startAdress,CHECKSIZE) == true)
-		else if (checkForNull(buf5, CHECKSIZE)==true)
-		{
-			//block0 = block1 XOR block2 XOR ...
-			//There is Parity information, that's why we assume RAID5
-			++raid5;
-		}
-		else
-		{
-			++misses;
-		}
-		if (handle->findGoodBlock() == false)
-		{
-			std::cout << "\tCouldnt find enough testable blocks. Trying to estimate with heuristics." << std::endl;
-			break;
-		}
-	}
-	std::cout << std::endl;
+        int raid1_miss = 0, raid1_hit = 0;
+        for (unsigned int j = 1; j < inFiles.size(); ++j)
+        {
+            char *in = inFiles.at(j)->getBlock();
+            for (int x = 0; x < CHECKSIZE; ++x)
+            {
+                buf1[x] = checkAgainstMe[x] ^ in[x];
+                buf5[x] ^= in[x];
+            }
+            if (!checkForNull(buf1, CHECKSIZE))
+            {
+                ++raid1_miss;
+                memset(buf1, 0, CHECKSIZE);
+            }
+            else
+            {
+                ++raid1_hit;
+            }
+        }
+        if (raid1_miss == 0)
+        {
+            ++raid1;
+        }
+        else if (checkForNull(buf5, CHECKSIZE))
+        {
+            ++raid5;
+        }
+        else
+        {
+            ++misses;
+        }
+        if (!handle->findGoodBlock())
+        {
+            std::cout << "\tCouldnt find enough testable blocks. Trying to estimate with heuristics." << std::endl;
+            break;
+        }
+    }
+    std::cout << std::endl;
 
-	//Final outputs
-	std::cout << "\tMirrored blocks:\t\t: " << std::setw(6) << raid1 << "\t(Raid1)"<< std::endl;
-	std::cout << "\tBlocks with parity info\t\t: " << std::setw(6) << raid5 << "\t(Raid5)"<< std::endl;
-	std::cout << "\tBlocks without relevant info\t: "       << std::setw(6) << misses << std::endl;
-	handle->reset();
+    std::cout << "\tMirrored blocks:\t\t: " << std::setw(6) << raid1 << "\t(Raid1)" << std::endl;
+    std::cout << "\tBlocks with parity info\t\t: " << std::setw(6) << raid5 << "\t(Raid5)" << std::endl;
+    std::cout << "\tBlocks without relevant info\t: " << std::setw(6) << misses << std::endl;
+    handle->reset();
 
-	//Trying to estimate the RAID-level from the results above
-	if (raid1 > (misses+raid5)*1.5)
-	{
-		//Enough RAID1 hits to evaluate this to RAID1
-		raidSystem = Raid1;
-		std::cout << "Found a Raid 1 system." << std::endl;
-		return true;
-	}
-	else if (raid5 > (misses+raid1)*1.5 && inFiles.size() >= 3)
-	{
-		//Enough RAID5 hits and enough images to evaluate this to RAID5
-		raidSystem = Raid5_complete;
-		std::cout << "Found a complete Raid 5 system." << std::endl;
-		return true;
-	}
+    return estimateRaidLevel(raid1, raid5, misses, inFiles);
+}
 
-	//See if you can find two identical partitiontables at the beginning of two images out of all.
-	std::vector<char *> tables;
-	for (unsigned int i = 0; i < inFiles.size(); ++i)
-	{
-		char *buf = inFiles.at(i)->getBlock();
-		if (checkForNull(buf, 512)==false)
-			tables.push_back(buf);
-	}
-	//If this can be found, it's RAID5 with one missing image (incomplete).
-	if (tables.size() == 2)
-	{
-		if (checkForEqual(tables.at(0),tables.at(1),512)==true)
-		{
-			lostImages = 1;
-			raidSystem = Raid5_incomplete;
-			std::cout << "Found a mirrored partition table. Has to be an incomplete Raid 5 system." << std::endl;
-			handle->reset();
-			return true;
-		}
-	}
-	//Otherwise it can still be RAID5-incomplete or RAID0
-	if (raid1 < (100*misses/(inFiles.size()+1)) && (raid1+raid5) > 0.007*(float)misses)
-	{
-		//At this point it could only be RAID0 or RAID5.
-		//There are enough hits for identical blocks and parity blocks => RAID5
-		lostImages = 1;
-		raidSystem = Raid5_incomplete;
-		std::cout << "Some mirrored blocks and some parity blocks found. It's probably an incomplete Raid 5 system." << std::endl;
-		handle->reset();
-		return true;
-	}
-	else if (raid1 >= (100*misses/(inFiles.size()+1)))
-	{
-		//Still too much identical blocks found. This has to be RAID1
-		raidSystem = Raid1;
-		std::cout << "Above average mirrored blocks found. Has to be a Raid 1 system." << std::endl;
-		return true;
-	}
-	else
-	{
-		//Now it can only be RAID0
-		raidSystem = Raid0;
-		std::cout << "Too few mirrored blocks or parity infos found. Has to be a Raid 0 system." << std::endl;
-		return true;
-	}
-	return false;
+bool RaidSystem::estimateRaidLevel(unsigned int raid1, unsigned int raid5, unsigned int misses, const std::vector<FileReader *> &inFiles)
+{
+    if (raid1 > (misses + raid5) * 1.5)
+    {
+        raidSystem = Raid1;
+        std::cout << "Found a Raid 1 system." << std::endl;
+        return true;
+    }
+    else if (raid5 > (misses + raid1) * 1.5 && inFiles.size() >= 3)
+    {
+        raidSystem = Raid5_complete;
+        std::cout << "Found a complete Raid 5 system." << std::endl;
+        return true;
+    }
+
+    std::vector<char *> tables;
+    for (auto &inFile : inFiles)
+    {
+        char *buf = inFile->getBlock();
+        if (!checkForNull(buf, 512))
+            tables.push_back(buf);
+    }
+    if (tables.size() == 2 && checkForEqual(tables.at(0), tables.at(1), 512))
+    {
+        lostImages = 1;
+        raidSystem = Raid5_incomplete;
+        std::cout << "Found a mirrored partition table. Has to be an incomplete Raid 5 system." << std::endl;
+        handle->reset();
+        return true;
+    }
+    if (raid1 < (100 * misses / (inFiles.size() + 1)) && (raid1 + raid5) > 0.007 * (float)misses)
+    {
+        lostImages = 1;
+        raidSystem = Raid5_incomplete;
+        std::cout << "Some mirrored blocks and some parity blocks found. It's probably an incomplete Raid 5 system." << std::endl;
+        handle->reset();
+        return true;
+    }
+    else if (raid1 >= (100 * misses / (inFiles.size() + 1)))
+    {
+        raidSystem = Raid1;
+        std::cout << "Above average mirrored blocks found. Has to be a Raid 1 system." << std::endl;
+        return true;
+    }
+    else
+    {
+        raidSystem = Raid0;
+        std::cout << "Too few mirrored blocks or parity infos found. Has to be a Raid 0 system." << std::endl;
+        return true;
+    }
 }
 
 /* This function calls the stripesize calculation in the fileHandler.
